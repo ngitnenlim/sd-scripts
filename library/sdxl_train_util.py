@@ -5,6 +5,7 @@ from typing import Optional
 
 import torch
 from library.device_utils import init_ipex, clean_memory_on_device
+
 init_ipex()
 
 from accelerate import init_empty_weights
@@ -13,8 +14,10 @@ from transformers import CLIPTokenizer
 from library import model_util, sdxl_model_util, train_util, sdxl_original_unet
 from library.sdxl_lpw_stable_diffusion import SdxlStableDiffusionLongPromptWeightingPipeline
 from .utils import setup_logging
+
 setup_logging()
 import logging
+
 logger = logging.getLogger(__name__)
 
 TOKENIZER1_PATH = "openai/clip-vit-large-patch14"
@@ -44,6 +47,7 @@ def load_target_model(args, accelerator, model_version: str, weight_dtype):
                 weight_dtype,
                 accelerator.device if args.lowram else "cpu",
                 model_dtype,
+                args.disable_mmap_load_safetensors,
             )
 
             # work on low-ram device
@@ -60,7 +64,7 @@ def load_target_model(args, accelerator, model_version: str, weight_dtype):
 
 
 def _load_target_model(
-    name_or_path: str, vae_path: Optional[str], model_version: str, weight_dtype, device="cpu", model_dtype=None
+    name_or_path: str, vae_path: Optional[str], model_version: str, weight_dtype, device="cpu", model_dtype=None, disable_mmap=False
 ):
     # model_dtype only work with full fp16/bf16
     name_or_path = os.readlink(name_or_path) if os.path.islink(name_or_path) else name_or_path
@@ -75,7 +79,7 @@ def _load_target_model(
             unet,
             logit_scale,
             ckpt_info,
-        ) = sdxl_model_util.load_models_from_sdxl_checkpoint(model_version, name_or_path, device, model_dtype)
+        ) = sdxl_model_util.load_models_from_sdxl_checkpoint(model_version, name_or_path, device, model_dtype, disable_mmap)
     else:
         # Diffusers model is loaded to CPU
         from diffusers import StableDiffusionXLPipeline
@@ -323,21 +327,27 @@ def save_sd_model_on_epoch_end_or_stepwise(
     )
 
 
-def add_sdxl_training_arguments(parser: argparse.ArgumentParser):
+def add_sdxl_training_arguments(parser: argparse.ArgumentParser, support_text_encoder_caching: bool = True):
+    if support_text_encoder_caching:
+        parser.add_argument(
+            "--cache_text_encoder_outputs",
+            action="store_true",
+            help="cache text encoder outputs / text encoderの出力をキャッシュする",
+        )
+        parser.add_argument(
+            "--cache_text_encoder_outputs_to_disk",
+            action="store_true",
+            help="cache text encoder outputs to disk / text encoderの出力をディスクにキャッシュする",
+        )
     parser.add_argument(
-        "--cache_text_encoder_outputs", action="store_true", help="cache text encoder outputs / text encoderの出力をキャッシュする"
-    )
-    parser.add_argument(
-        "--cache_text_encoder_outputs_to_disk",
+        "--disable_mmap_load_safetensors",
         action="store_true",
-        help="cache text encoder outputs to disk / text encoderの出力をディスクにキャッシュする",
+        help="disable mmap load for safetensors. Speed up model loading in WSL environment / safetensorsのmmapロードを無効にする。WSL環境等でモデル読み込みを高速化できる",
     )
 
 
-def verify_sdxl_training_args(args: argparse.Namespace, supportTextEncoderCaching: bool = True):
+def verify_sdxl_training_args(args: argparse.Namespace, support_text_encoder_caching: bool = True):
     assert not args.v2, "v2 cannot be enabled in SDXL training / SDXL学習ではv2を有効にすることはできません"
-    if args.v_parameterization:
-        logger.warning("v_parameterization will be unexpected / SDXL学習ではv_parameterizationは想定外の動作になります")
 
     if args.clip_skip is not None:
         logger.warning("clip_skip will be unexpected / SDXL学習ではclip_skipは動作しません")
@@ -359,7 +369,7 @@ def verify_sdxl_training_args(args: argparse.Namespace, supportTextEncoderCachin
         not hasattr(args, "weighted_captions") or not args.weighted_captions
     ), "weighted_captions cannot be enabled in SDXL training currently / SDXL学習では今のところweighted_captionsを有効にすることはできません"
 
-    if supportTextEncoderCaching:
+    if support_text_encoder_caching:
         if args.cache_text_encoder_outputs_to_disk and not args.cache_text_encoder_outputs:
             args.cache_text_encoder_outputs = True
             logger.warning(
