@@ -2,6 +2,7 @@
 import os
 import subprocess
 import argparse
+import time
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--directory", type=str, default=None, help="Exact location for file downloads")
@@ -110,6 +111,7 @@ if args.write_metadata:
             scrape_config["range"] = f"{i[0]}-{i[1]}"
             scrape_args = scrape(scrape_config)
             subprocess.Popen(f"setsid nohup gallery-dl {scrape_args} {additional_arguments} &", shell=True)
+            time.sleep(3)
 else:
     cap = subprocess.run(f"gallery-dl {get_url_args} {additional_arguments}", shell=True, capture_output=True, text=True)
     with open(scraper_text, "w") as f:
